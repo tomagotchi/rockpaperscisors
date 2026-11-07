@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#07051a" />
+<title>Prism Orb</title>
+<style>
+  :root { --bg: #07051a; --fg: #f4eeff; --muted: rgba(244, 238, 255, 0.62); }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+    font-family: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-tap-highlight-color: transparent; overscroll-behavior: none;
+  }
+  canvas { display: block; position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; outline: none; }
+  #hud {
+    position: fixed; left: 0; right: 0; bottom: max(20px, env(safe-area-inset-bottom));
+    display: flex; justify-content: center; pointer-events: none; padding: 0 16px;
+  }
+  #hint {
+    font-size: 14px; letter-spacing: 0.02em; color: var(--muted); text-align: center;
+    padding: 10px 16px; border-radius: 999px; background: rgba(20, 12, 48, 0.45);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    transition: opacity 1.2s ease; max-width: 100%;
+  }
+  #hint.hidden { opacity: 0; }
+  #fallback { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 24px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="hud"><div id="hint">Drag to spin · Tap the orb or a unicorn</div></div>
+<div id="fallback">This scene needs WebGL 2, which your browser doesn't seem to support.</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ------------------------------------------------------------------ *
+ * Quality profile
+ * ------------------------------------------------------------------ */
+const isMobile = matchMedia('(pointer: coarse)').matches || Math.min(innerWidth, innerHeight) < 600;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const Q = isMobile
+  ? { dpr: Math.min(devicePixelRatio, 1.5), stars: 700,  sparks: 450, samples: 0, bloomScale: 0.5, unicorns: 6, trailRate: 9 }
+  : { dpr: Math.min(devicePixelRatio, 2),   stars: 1600, sparks: 1000, samples: 4, bloomScale: 1.0, unicorns: 7, trailRate: 18 };
+const MOTION = reducedMotion ? 0.4 : 1;
+
+/* ------------------------------------------------------------------ *
+ * Renderer / scene / camera
+ * ------------------------------------------------------------------ */
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+} catch (e) {
+  document.getElementById('fallback').style.display = 'grid';
+  document.getElementById('hud').style.display = 'none';
+  throw e;
+}
+let dpr = Q.dpr;
+renderer.setPixelRatio(dpr);
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 250);
+
+/* ------------------------------------------------------------------ *
+ * Environment map: a dark room ringed with rainbow light panels, so
+ * the glass has colourful light to refract and reflect.
+ * ------------------------------------------------------------------ */
+function buildEnvironment() {
+  const env = new THREE.Scene();
+  env.add(new THREE.Mesh(
+    new THREE.SphereGeometry(10, 32, 16),
+    new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      vertexShader: `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `varying vec3 vP; void main(){ float y = vP.y * 0.5 + 0.5; gl_FragColor = vec4(mix(vec3(0.02,0.01,0.06), vec3(0.22,0.14,0.42), y), 1.0); }`,
+    })
+  ));
+  const panel = new THREE.PlaneGeometry(2.2, 7);
+  const n = 7;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const c = new THREE.Color().setHSL(i / n, 1, 0.55).multiplyScalar(2.2);
+    const m = new THREE.Mesh(panel, new THREE.MeshBasicMaterial({ color: c, side: THREE.DoubleSide }));
+    m.position.set(Math.cos(a) * 6, (i % 2 ? 1 : -1) * 1.2, Math.sin(a) * 6);
+    m.lookAt(0, 0, 0);
+    env.add(m);
+  }
+  const top = new THREE.Mesh(new THREE.PlaneGeometry(5, 5), new THREE.MeshBasicMaterial({ color: new THREE.Color(2.5, 2.5, 2.5) }));
+  top.position.set(0, 7, 2); top.lookAt(0, 0, 0);
+  env.add(top);
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const tex = pmrem.fromScene(env, 0.02).texture;
+  pmrem.dispose();
+  return tex;
+}
+scene.environment = buildEnvironment();
+
+/* Sky: deep indigo gradient with a faint violet glow behind the orb */
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(120, 32, 16),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      varying vec3 vP; uniform float uTime;
+      void main(){
+        float y = vP.y * 0.5 + 0.5;
+        vec3 c = mix(vec3(0.012,0.008,0.035), vec3(0.07,0.035,0.15), smoothstep(0.0, 0.9, y));
+        float band = exp(-pow(vP.y * 3.0, 2.0));
+        float hue = atan(vP.z, vP.x) / 6.2831 + uTime * 0.01;
+        vec3 tint = 0.5 + 0.5 * cos(6.2831 * (hue + vec3(0.0, 0.33, 0.67)));
+        c += tint * band * 0.035;
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  })
+);
+scene.add(sky);
+
+/* Lights */
+scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x2a1840, 0.55));
+const key = new THREE.DirectionalLight(0xffffff, 0.9);
+key.position.set(3, 5, 4);
+scene.add(key);
+const orbLight = new THREE.PointLight(0xffffff, 4, 0, 2);
+scene.add(orbLight);
+
+/* ------------------------------------------------------------------ *
+ * The prism orb
+ * ------------------------------------------------------------------ */
+const ORB_R = 1.15;
+const orb = new THREE.Group();
+scene.add(orb);
+
+const facetGeo = new THREE.IcosahedronGeometry(ORB_R, 1); // 80 large facets
+facetGeo.computeVertexNormals(); // non-indexed => flat per-face normals
+
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 0,
+  roughness: 0.03,
+  transmission: 1,
+  thickness: 0.9,
+  ior: 1.6,
+  dispersion: 7,            // splits refracted light into a spectrum
+  iridescence: 1,
+  iridescenceIOR: 1.5,
+  iridescenceThicknessRange: [180, 820],
+  clearcoat: 1,
+  clearcoatRoughness: 0.04,
+  specularIntensity: 1,
+  envMapIntensity: 1.2,
+  flatShading: true,
+});
+const glass = new THREE.Mesh(facetGeo, glassMat);
+orb.add(glass);
+
+/* Rainbow facet layer: per-facet spectral colour that drifts over time,
+   strongest at grazing angles, plus moving glints. Additive on top of glass. */
+const rainbowMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  uniforms: { uTime: { value: 0 }, uIntensity: { value: 1 } },
+  vertexShader: `
+    varying vec3 vN; varying vec3 vW; varying vec3 vL;
+    void main(){
+      vN = normalize(mat3(modelMatrix) * normal);
+      vL = normal;
+      vec4 w = modelMatrix * vec4(position, 1.0);
+      vW = w.xyz;
+      gl_Position = projectionMatrix * viewMatrix * w;
+    }`,
+  fragmentShader: `
+    uniform float uTime; uniform float uIntensity;
+    varying vec3 vN; varying vec3 vW; varying vec3 vL;
+    vec3 spectrum(float h){ return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); }
+    float hash(vec3 p){ return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
+    void main(){
+      vec3 n = normalize(vN);
+      vec3 v = normalize(cameraPosition - vW);
+      float ndv = abs(dot(n, v));
+      float fres = pow(1.0 - ndv, 2.2);
+      float facet = hash(floor(vL * 40.0));
+      float h = fract(dot(vL, vec3(0.55, 0.8, 0.35)) * 0.9 + uTime * 0.045 + fres * 0.7 + facet * 0.15);
+      vec3 col = spectrum(h);
+      vec3 L1 = normalize(vec3(sin(uTime * 0.37), 0.7, cos(uTime * 0.37)));
+      vec3 L2 = normalize(vec3(cos(uTime * 0.23 + 2.0), -0.3, sin(uTime * 0.23 + 2.0)));
+      vec3 r = reflect(-v, n);
+      float glint = pow(max(dot(r, L1), 0.0), 40.0) + 0.6 * pow(max(dot(r, L2), 0.0), 60.0);
+      float shimmer = 0.5 + 0.5 * sin(uTime * 1.3 + facet * 30.0);
+      float a = (0.10 + 0.12 * shimmer + fres * 0.7) * uIntensity;
+      gl_FragColor = vec4(col * a + spectrum(fract(h + 0.5)) * glint * 1.6 * uIntensity, 1.0);
+    }`,
+});
+const rainbow = new THREE.Mesh(facetGeo, rainbowMat);
+rainbow.scale.setScalar(1.003);
+rainbow.renderOrder = 2;
+orb.add(rainbow);
+
+/* Glowing core seen through the glass */
+const coreMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.45, 1.9) });
+const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.24, 2), coreMat);
+orb.add(core);
+
+/* Soft halo sprite */
+function radialTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+  grd.addColorStop(0.0, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.18, 'rgba(255,255,255,0.55)');
+  grd.addColorStop(0.45, 'rgba(255,255,255,0.14)');
+  grd.addColorStop(1.0, 'rgba(255,255,255,0)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 256, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: radialTexture(), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0.2,
+}));
+halo.scale.setScalar(5.2);
+halo.renderOrder = 3;
+scene.add(halo);
+
+/* ------------------------------------------------------------------ *
+ * Sparks: one pooled particle system for unicorn trails and bursts
+ * ------------------------------------------------------------------ */
+class Sparks {
+  constructor(n) {
+    this.n = n; this.cursor = 0;
+    this.pos = new Float32Array(n * 3);
+    this.vel = new Float32Array(n * 3);
+    this.col = new Float32Array(n * 3);
+    this.life = new Float32Array(n);
+    this.max = new Float32Array(n).fill(1);
+    this.size = new Float32Array(n);
+    this.lifeN = new Float32Array(n);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('aColor', new THREE.BufferAttribute(this.col, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('aLife', new THREE.BufferAttribute(this.lifeN, 1).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('aSize', new THREE.BufferAttribute(this.size, 1).setUsage(THREE.DynamicDrawUsage));
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 50);
+    this.geo = g;
+    this.mat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      uniforms: { uScale: { value: 400 } },
+      vertexShader: `
+        attribute vec3 aColor; attribute float aLife; attribute float aSize;
+        uniform float uScale; varying vec3 vC; varying float vL;
+        void main(){
+          vC = aColor; vL = aLife;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = aLife > 0.0 ? aSize * uScale * (0.35 + 0.65 * aLife) / -mv.z : 0.0;
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        varying vec3 vC; varying float vL;
+        void main(){
+          float d = length(gl_PointCoord - 0.5);
+          float a = smoothstep(0.5, 0.0, d); a *= a;
+          float hot = smoothstep(0.18, 0.0, d);
+          gl_FragColor = vec4((vC * 1.2 + hot * 0.6) * a * vL, 1.0);
+        }`,
+    });
+    this.points = new THREE.Points(g, this.mat);
+    this.points.frustumCulled = false;
+    this.points.renderOrder = 4;
+  }
+  spawn(p, v, color, life, size) {
+    const i = this.cursor; this.cursor = (this.cursor + 1) % this.n;
+    const i3 = i * 3;
+    this.pos[i3] = p.x; this.pos[i3 + 1] = p.y; this.pos[i3 + 2] = p.z;
+    this.vel[i3] = v.x; this.vel[i3 + 1] = v.y; this.vel[i3 + 2] = v.z;
+    this.col[i3] = color.r; this.col[i3 + 1] = color.g; this.col[i3 + 2] = color.b;
+    this.life[i] = life; this.max[i] = life; this.size[i] = size;
+  }
+  update(dt) {
+    const drag = Math.exp(-dt * 1.6);
+    for (let i = 0; i < this.n; i++) {
+      if (this.life[i] <= 0) { this.lifeN[i] = 0; continue; }
+      this.life[i] -= dt;
+      const i3 = i * 3;
+      this.vel[i3] *= drag; this.vel[i3 + 1] = this.vel[i3 + 1] * drag - dt * 0.25; this.vel[i3 + 2] *= drag;
+      this.pos[i3] += this.vel[i3] * dt; this.pos[i3 + 1] += this.vel[i3 + 1] * dt; this.pos[i3 + 2] += this.vel[i3 + 2] * dt;
+      this.lifeN[i] = Math.max(0, this.life[i] / this.max[i]);
+    }
+    const a = this.geo.attributes;
+    a.position.needsUpdate = a.aColor.needsUpdate = a.aLife.needsUpdate = a.aSize.needsUpdate = true;
+  }
+}
+const sparks = new Sparks(Q.sparks);
+scene.add(sparks.points);
+
+/* Twinkling starfield */
+function makeStars(n) {
+  const pos = new Float32Array(n * 3), phase = new Float32Array(n), size = new Float32Array(n), hue = new Float32Array(n);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    v.randomDirection().multiplyScalar(35 + Math.random() * 45);
+    pos.set([v.x, v.y, v.z], i * 3);
+    phase[i] = Math.random() * Math.PI * 2;
+    size[i] = 0.12 + Math.random() * Math.random() * 0.45;
+    hue[i] = Math.random();
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
+  g.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+  g.setAttribute('aHue', new THREE.BufferAttribute(hue, 1));
+  const m = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 }, uScale: { value: 400 } },
+    vertexShader: `
+      attribute float aPhase; attribute float aSize; attribute float aHue;
+      uniform float uTime; uniform float uScale; varying float vA; varying vec3 vC;
+      void main(){
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vA = 0.35 + 0.65 * (0.5 + 0.5 * sin(uTime * (0.8 + fract(aPhase) * 1.6) + aPhase * 7.0));
+        vC = mix(vec3(1.0), 0.5 + 0.5 * cos(6.2831 * (aHue + vec3(0.0, 0.33, 0.67))), 0.35);
+        gl_PointSize = max(1.0, aSize * uScale / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      varying float vA; varying vec3 vC;
+      void main(){ float d = length(gl_PointCoord - 0.5); float a = smoothstep(0.5, 0.0, d); gl_FragColor = vec4(vC * a * a * vA, 1.0); }`,
+  });
+  return new THREE.Points(g, m);
+}
+const stars = makeStars(Q.stars);
+scene.add(stars);
+
+/* ------------------------------------------------------------------ *
+ * Low-poly unicorns
+ * ------------------------------------------------------------------ */
+const G = {
+  body:  new THREE.CapsuleGeometry(0.13, 0.3, 2, 7).rotateZ(Math.PI / 2),
+  neck:  new THREE.CylinderGeometry(0.065, 0.095, 0.28, 6),
+  head:  new THREE.BoxGeometry(0.2, 0.13, 0.13),
+  snout: new THREE.BoxGeometry(0.11, 0.095, 0.11),
+  horn:  new THREE.ConeGeometry(0.028, 0.21, 6),
+  ear:   new THREE.ConeGeometry(0.026, 0.075, 4),
+  eye:   new THREE.SphereGeometry(0.019, 6, 4),
+  leg:   new THREE.CylinderGeometry(0.038, 0.03, 0.24, 5).translate(0, -0.12, 0),
+  hoof:  new THREE.CylinderGeometry(0.036, 0.042, 0.05, 5).translate(0, -0.26, 0),
+  mane:  new THREE.ConeGeometry(0.048, 0.15, 4),
+  tail:  new THREE.ConeGeometry(0.05, 0.3, 5).translate(0, -0.15, 0),
+  hit:   new THREE.SphereGeometry(0.48, 8, 6),
+};
+const hornMat = new THREE.MeshStandardMaterial({ color: 0xffd76a, metalness: 0.7, roughness: 0.25, emissive: 0xffb340, emissiveIntensity: 0.45, flatShading: true });
+const eyeMat  = new THREE.MeshStandardMaterial({ color: 0x1a1030, roughness: 0.2 });
+const hitMat  = new THREE.MeshBasicMaterial({ visible: false });
+const rainbowMats = Array.from({ length: 7 }, (_, k) =>
+  new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(k / 7, 0.85, 0.62), roughness: 0.45, flatShading: true,
+    emissive: new THREE.Color().setHSL(k / 7, 0.9, 0.5), emissiveIntensity: 0.25 }));
+
+function makeUnicorn(hue) {
+  const coat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.75, 0.78), roughness: 0.6, flatShading: true, envMapIntensity: 0.35 });
+  const hoofMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.4, 0.45), roughness: 0.4, flatShading: true });
+  const add = (parent, geo, mat, x = 0, y = 0, z = 0, rz = 0) => {
+    const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.z = rz; parent.add(m); return m;
+  };
+
+  const root = new THREE.Group();
+  const rig = new THREE.Group();
+  root.add(rig);
+
+  add(rig, G.body, coat);
+  add(rig, G.neck, coat, 0.2, 0.14, 0, -0.55);
+
+  const head = new THREE.Group();
+  head.position.set(0.3, 0.29, 0);
+  rig.add(head);
+  add(head, G.head, coat, 0.05, 0, 0, -0.35);
+  add(head, G.snout, coat, 0.15, -0.05, 0, -0.35);
+  add(head, G.horn, hornMat, 0.06, 0.13, 0, -0.5);
+  add(head, G.ear, coat, -0.02, 0.09, 0.04, 0.25);
+  add(head, G.ear, coat, -0.02, 0.09, -0.04, 0.25);
+  add(head, G.eye, eyeMat, 0.09, 0.025, 0.066);
+  add(head, G.eye, eyeMat, 0.09, 0.025, -0.066);
+
+  // Rainbow mane along the back of the neck
+  for (let k = 0; k < 6; k++) {
+    const t = k / 5;
+    add(rig, G.mane, rainbowMats[k % 7], 0.1 + t * 0.17, 0.2 + t * 0.17, 0, 0.95);
+  }
+
+  const legs = [[0.15, 0.07], [0.15, -0.07], [-0.15, 0.07], [-0.15, -0.07]].map(([x, z]) => {
+    const g = new THREE.Group(); g.position.set(x, -0.06, z);
+    add(g, G.leg, coat); add(g, G.hoof, hoofMat);
+    rig.add(g); return g;
+  });
+
+  const tail = new THREE.Group();
+  tail.position.set(-0.27, 0.06, 0);
+  rig.add(tail);
+  [[0, 0], [2, 0.25], [4, -0.25]].forEach(([k, rz]) => {
+    const m = add(tail, G.tail, rainbowMats[k], 0, 0, (rz) * 0.08, rz);
+  });
+
+  const hit = add(rig, G.hit, hitMat, 0.05, 0.08, 0);
+
+  return { root, rig, head, legs, tail, hit };
+}
+
+const unicorns = [];
+for (let i = 0; i < Q.unicorns; i++) {
+  const hue = i / Q.unicorns;
+  const u = makeUnicorn(hue);
+  Object.assign(u, {
+    hue,
+    angle: (i / Q.unicorns) * Math.PI * 2 + Math.random() * 0.3,
+    radius: 2.15 + (i % 3) * 0.38,
+    baseY: -0.45 + ((i * 0.37) % 1) * 0.9,
+    speed: (0.26 + Math.random() * 0.12) * MOTION,
+    gait: 7 + Math.random() * 2,
+    seed: Math.random() * 100,
+    jump: -1, flip: false, trailAcc: 0,
+  });
+  u.hit.userData.unicorn = u;
+  u.root.scale.setScalar(isMobile ? 1.05 : 0.95);
+  scene.add(u.root);
+  unicorns.push(u);
+}
+
+/* ------------------------------------------------------------------ *
+ * Post-processing
+ * ------------------------------------------------------------------ */
+const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: Q.samples });
+const composer = new EffectComposer(renderer, rt);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.5, 0.45, 0.82);
+const bloomSetSize = bloom.setSize.bind(bloom);
+bloom.setSize = (w, h) => bloomSetSize(Math.max(1, Math.round(w * Q.bloomScale)), Math.max(1, Math.round(h * Q.bloomScale)));
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+/* ------------------------------------------------------------------ *
+ * Camera framing + resize
+ * ------------------------------------------------------------------ */
+const FRAME_R = 3.35;           // radius of the scene we want in view
+let zoom = 1, zoomTarget = 1;
+const parallax = new THREE.Vector2(), parallaxTarget = new THREE.Vector2();
+let baseDist = 10;
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  camera.aspect = w / h;
+  const vf = THREE.MathUtils.degToRad(camera.fov) / 2;
+  const hf = Math.atan(Math.tan(vf) * camera.aspect);
+  baseDist = Math.max(FRAME_R / Math.sin(vf), FRAME_R / Math.sin(hf)) * 0.98;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(w, h);
+  composer.setPixelRatio(dpr);
+  composer.setSize(w, h);
+  const scale = (h * dpr * 0.5) / Math.tan(vf);
+  sparks.mat.uniforms.uScale.value = scale;
+  stars.material.uniforms.uScale.value = scale;
+}
+addEventListener('resize', resize);
+resize();
+
+function updateCamera(dt) {
+  zoom += (zoomTarget - zoom) * (1 - Math.exp(-dt * 6));
+  parallax.lerp(parallaxTarget, 1 - Math.exp(-dt * 3));
+  const d = baseDist * zoom;
+  const elev = 0.22 + parallax.y * 0.12;
+  const az = parallax.x * 0.18;
+  camera.position.set(Math.sin(az) * Math.cos(elev) * d, Math.sin(elev) * d, Math.cos(az) * Math.cos(elev) * d);
+  camera.lookAt(0, -0.05, 0);
+}
+
+/* ------------------------------------------------------------------ *
+ * Interaction: drag spins the orb (with inertia), pinch/wheel zooms,
+ * tap the orb for a surge, tap a unicorn to make it leap.
+ * ------------------------------------------------------------------ */
+const canvas = renderer.domElement;
+const pointers = new Map();
+const angVel = new THREE.Vector3(0, 0.18, 0);
+const IDLE_VEL = new THREE.Vector3(0.03, 0.17 * MOTION, 0.0);
+let dragging = false, lastInteract = -10, pinchDist = 0;
+let tapStart = null;
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3(), camRight = new THREE.Vector3();
+let surge = 0;
+const hint = document.getElementById('hint');
+let hintShown = true;
+const hideHint = () => { if (hintShown) { hintShown = false; hint.classList.add('hidden'); } };
+setTimeout(hideHint, 9000);
+
+canvas.addEventListener('pointerdown', (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now() });
+  if (pointers.size === 1) {
+    dragging = true;
+    tapStart = { x: e.clientX, y: e.clientY, t: performance.now() };
+  } else if (pointers.size === 2) {
+    tapStart = null;
+    const [a, b] = [...pointers.values()];
+    pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+  }
+  lastInteract = clock.elapsedTime;
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'mouse' && !pointers.has(e.pointerId)) {
+    parallaxTarget.set((e.clientX / innerWidth) * 2 - 1, -((e.clientY / innerHeight) * 2 - 1));
+    return;
+  }
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  const now = performance.now();
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  const pdt = Math.max(1, now - p.t) / 1000;
+  p.x = e.clientX; p.y = e.clientY; p.t = now;
+
+  if (pointers.size >= 2) {
+    const [a, b] = [...pointers.values()];
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchDist > 0) zoomTarget = THREE.MathUtils.clamp(zoomTarget * (pinchDist / dist), 0.6, 1.7);
+    pinchDist = dist;
+    return;
+  }
+  if (tapStart && Math.hypot(e.clientX - tapStart.x, e.clientY - tapStart.y) > 8) tapStart = null;
+  if (!dragging) return;
+
+  // Rotate around the camera's up and right axes so the drag feels direct
+  const k = 4.2 / Math.min(innerWidth, innerHeight);
+  camRight.setFromMatrixColumn(camera.matrixWorld, 0);
+  tmpQ.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, dx * k);
+  orb.quaternion.premultiply(tmpQ);
+  tmpQ.setFromAxisAngle(camRight, dy * k);
+  orb.quaternion.premultiply(tmpQ);
+  tmpV.set(0, dx * k / pdt, 0).addScaledVector(camRight, dy * k / pdt);
+  angVel.lerp(tmpV, 0.5);
+  if (angVel.length() > 12) angVel.setLength(12);
+  lastInteract = clock.elapsedTime;
+  hideHint();
+});
+
+function endPointer(e) {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinchDist = 0;
+  if (pointers.size === 0) {
+    dragging = false;
+    if (tapStart && performance.now() - tapStart.t < 350 && e.type === 'pointerup') handleTap(e.clientX, e.clientY);
+    tapStart = null;
+  } else if (pointers.size === 1) {
+    const [p] = pointers.values(); p.t = performance.now();
+  }
+  lastInteract = clock.elapsedTime;
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') parallaxTarget.set(0, 0); });
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  zoomTarget = THREE.MathUtils.clamp(zoomTarget * Math.exp(e.deltaY * 0.0012), 0.6, 1.7);
+}, { passive: false });
+
+const hitTargets = [glass, ...unicorns.map((u) => u.hit)];
+function handleTap(x, y) {
+  hideHint();
+  ndc.set((x / innerWidth) * 2 - 1, -(y / innerHeight) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const hit = raycaster.intersectObjects(hitTargets, false)[0];
+  if (!hit) return;
+  const u = hit.object.userData.unicorn;
+  if (u) leap(u, !reducedMotion);
+  else orbSurge();
+}
+
+const tmpC = new THREE.Color(), tmpP = new THREE.Vector3(), tmpVel = new THREE.Vector3();
+function burst(center, count, speed, spread, life, size, hue) {
+  for (let i = 0; i < count; i++) {
+    tmpVel.randomDirection();
+    tmpP.copy(center).addScaledVector(tmpVel, spread);
+    tmpVel.multiplyScalar(speed * (0.4 + Math.random() * 0.8));
+    tmpC.setHSL(hue === undefined ? Math.random() : (hue + (Math.random() - 0.5) * 0.25 + 1) % 1, 1, 0.62);
+    sparks.spawn(tmpP, tmpVel, tmpC, life * (0.6 + Math.random() * 0.6), size * (0.6 + Math.random() * 0.8));
+  }
+}
+
+function leap(u, flip) {
+  if (u.jump >= 0) return;
+  u.jump = 0; u.flip = flip;
+  u.rig.getWorldPosition(tmpP);
+  burst(tmpP, isMobile ? 40 : 70, 1.4, 0.15, 1.1, 0.07, u.hue);
+}
+
+function orbSurge() {
+  surge = 1;
+  burst(new THREE.Vector3(), isMobile ? 110 : 180, 3.2, ORB_R, 1.6, 0.07);
+  tmpV.randomDirection().multiplyScalar(2.5);
+  angVel.add(tmpV);
+  lastInteract = clock.elapsedTime;
+  unicorns.forEach((u, i) => setTimeout(() => leap(u, false), 60 + i * 70));
+}
+
+/* ------------------------------------------------------------------ *
+ * Animation
+ * ------------------------------------------------------------------ */
+const clock = new THREE.Clock();
+const worldTail = new THREE.Vector3();
+const TAU = Math.PI * 2;
+
+function updateOrb(t, dt) {
+  // Inertia, then ease back to the slow idle spin once left alone
+  if (!dragging) {
+    const idle = t - lastInteract > 1.5;
+    angVel.lerp(idle ? IDLE_VEL : tmpV.set(0, 0, 0), 1 - Math.exp(-dt * (idle ? 0.6 : 2.2)));
+    const w = angVel.length();
+    if (w > 1e-5) {
+      tmpQ.setFromAxisAngle(tmpV.copy(angVel).divideScalar(w), w * dt);
+      orb.quaternion.premultiply(tmpQ);
+    }
+  }
+
+  surge = Math.max(0, surge - dt * 0.9);
+  const breath = 0.5 + 0.5 * Math.sin(t * 1.25 * (reducedMotion ? 0.6 : 1)); // ~5s breathing cycle
+  const s = surge * surge;
+
+  core.scale.setScalar(1 + breath * 0.14 + s * 0.5);
+  const hue = (t * 0.03) % 1;
+  coreMat.color.setHSL(hue, 0.6, 0.7).multiplyScalar(0.9 + breath * 0.45 + s * 0.9);
+  halo.material.color.setHSL((hue + 0.5) % 1, 0.6, 0.72);
+  halo.material.opacity = 0.07 + breath * 0.07 + s * 0.1;
+  halo.scale.setScalar(4.2 + breath * 0.6 + s * 2);
+  orbLight.color.setHSL(hue, 0.8, 0.65);
+  orbLight.intensity = 3 + breath * 2 + s * 5;
+  rainbowMat.uniforms.uTime.value = t * MOTION;
+  rainbowMat.uniforms.uIntensity.value = 0.85 + breath * 0.3 + s * 0.7;
+  bloom.strength = 0.4 + breath * 0.25 + s * 0.3;
+  glassMat.dispersion = 6 + Math.sin(t * 0.4) * 2;
+}
+
+function updateUnicorns(t, dt) {
+  const speedMul = 1 + surge * 2.2;
+  for (const u of unicorns) {
+    u.angle += u.speed * speedMul * dt;
+    const a = u.angle;
+    const y = u.baseY + Math.sin(t * 0.55 + u.seed) * 0.22;
+    u.root.position.set(Math.cos(a) * u.radius, y, Math.sin(a) * u.radius);
+    // Face along the direction of travel (tangent), with a slight bank into the turn
+    const tx = -Math.sin(a), tz = Math.cos(a);
+    u.root.rotation.set(0, Math.atan2(-tz, tx), 0);
+    u.root.rotateX(-0.12);
+
+    const ph = t * u.gait * MOTION * (0.85 + speedMul * 0.15) + u.seed;
+    const sw = 0.7;
+    u.legs[0].rotation.z = Math.sin(ph) * sw;
+    u.legs[1].rotation.z = Math.sin(ph + 0.6) * sw;
+    u.legs[2].rotation.z = Math.sin(ph + Math.PI) * sw;
+    u.legs[3].rotation.z = Math.sin(ph + Math.PI + 0.6) * sw;
+    u.head.rotation.z = Math.sin(ph) * 0.09;
+    u.tail.rotation.z = -0.95 + Math.sin(ph) * 0.22;
+    u.tail.rotation.x = Math.sin(ph * 0.5) * 0.35;
+
+    let ry = Math.abs(Math.sin(ph)) * 0.06;
+    let rz = Math.cos(ph) * 0.07;
+    if (u.jump >= 0) {
+      u.jump += dt / 0.95;
+      const p = Math.min(u.jump, 1);
+      ry += Math.sin(Math.PI * p) * 0.75;
+      if (u.flip) rz -= THREE.MathUtils.smootherstep(p, 0, 1) * TAU;
+      // fold the legs mid-air
+      const tuck = Math.sin(Math.PI * p);
+      u.legs[0].rotation.z += tuck * 0.8; u.legs[1].rotation.z += tuck * 0.8;
+      u.legs[2].rotation.z -= tuck * 0.8; u.legs[3].rotation.z -= tuck * 0.8;
+      if (u.jump >= 1) u.jump = -1;
+    }
+    u.rig.position.y = ry;
+    u.rig.rotation.z = rz;
+
+    // Rainbow sparkle trail from the tail
+    u.trailAcc += dt * Q.trailRate * (1 + surge * 2);
+    if (u.trailAcc >= 1) {
+      u.tail.getWorldPosition(worldTail);
+      while (u.trailAcc >= 1) {
+        u.trailAcc -= 1;
+        tmpVel.set((Math.random() - 0.5) * 0.15, (Math.random() - 0.3) * 0.15, (Math.random() - 0.5) * 0.15);
+        tmpC.setHSL((u.hue + Math.random() * 0.35) % 1, 1, 0.62);
+        sparks.spawn(worldTail, tmpVel, tmpC, 0.9 + Math.random() * 0.6, 0.045 + Math.random() * 0.04);
+      }
+    }
+  }
+}
+
+/* Adaptive resolution: if the device can't keep up, step the pixel ratio down */
+let perfT = 0, perfFrames = 0, perfChecks = 0;
+function adaptQuality(dt) {
+  if (perfChecks >= 4) return;
+  perfT += dt; perfFrames++;
+  if (perfT < 2.5) return;
+  const fps = perfFrames / perfT;
+  perfT = 0; perfFrames = 0; perfChecks++;
+  if (fps < 45 && dpr > 1) {
+    dpr = Math.max(1, dpr - 0.25);
+    resize();
+  }
+}
+
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+  updateCamera(dt);
+  updateOrb(t, dt);
+  updateUnicorns(t, dt);
+  sparks.update(dt);
+  stars.material.uniforms.uTime.value = t;
+  stars.rotation.y = t * 0.004;
+  sky.material.uniforms.uTime.value = t;
+  composer.render(dt);
+  if (!document.hidden) adaptQuality(dt);
+});
+
+addEventListener('visibilitychange', () => { if (!document.hidden) { clock.getDelta(); perfT = 0; perfFrames = 0; } });
+</script>
+</body>
+</html>
