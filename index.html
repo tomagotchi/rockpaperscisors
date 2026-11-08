@@ -29,7 +29,7 @@
 </style>
 </head>
 <body>
-<div id="hud"><div id="hint">Drag to spin · Tap the orb or a unicorn</div></div>
+<div id="hud"><div id="hint">Drag to look around · Spin the orb · Tap anything</div></div>
 <div id="fallback">This scene needs WebGL 2, which your browser doesn't seem to support.</div>
 
 <script type="importmap">
@@ -444,6 +444,102 @@ for (let i = 0; i < Q.unicorns; i++) {
   unicorns.push(u);
 }
 
+
+/* ------------------------------------------------------------------ *
+ * Floating ice floe with waddling penguins
+ * ------------------------------------------------------------------ */
+const FLOE_Y = -1.95, FLOE_R = 2.05, FLOE_TOP = 0.22;
+const floe = new THREE.Group();
+floe.position.y = FLOE_Y;
+scene.add(floe);
+
+function jitter(geo, xz, y) {
+  // Nudge vertices (consistently across shared positions) for a hand-chipped look
+  const p = geo.attributes.position, seen = new Map();
+  for (let i = 0; i < p.count; i++) {
+    const k = `${p.getX(i).toFixed(3)},${p.getY(i).toFixed(3)},${p.getZ(i).toFixed(3)}`;
+    if (!seen.has(k)) seen.set(k, [(Math.random() - 0.5) * xz, (Math.random() - 0.5) * y, (Math.random() - 0.5) * xz]);
+    const d = seen.get(k);
+    p.setXYZ(i, p.getX(i) + d[0], p.getY(i) + d[1], p.getZ(i) + d[2]);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+{
+  const iceMat = new THREE.MeshStandardMaterial({ color: 0xbfe6ff, roughness: 0.22, metalness: 0.05, flatShading: true,
+    emissive: 0x2a5a8a, emissiveIntensity: 0.2, envMapIntensity: 0.7 });
+  const snowMat = new THREE.MeshStandardMaterial({ color: 0xa9bad6, roughness: 0.95, flatShading: true, envMapIntensity: 0.2 });
+  const slab = new THREE.Mesh(jitter(new THREE.CylinderGeometry(FLOE_R, FLOE_R * 0.92, 0.36, 11, 1), 0.22, 0), iceMat);
+  slab.position.y = 0.02;
+  const snow = new THREE.Mesh(jitter(new THREE.CylinderGeometry(FLOE_R * 0.93, FLOE_R * 0.97, 0.06, 11, 1), 0.14, 0), snowMat);
+  snow.position.y = 0.19;
+  const berg = new THREE.Mesh(jitter(new THREE.ConeGeometry(FLOE_R * 0.9, 1.0, 11, 2).rotateX(Math.PI), 0.3, 0.15), iceMat);
+  berg.position.y = -0.66;
+  floe.add(slab, snow, berg);
+  // A few chunks of ice on top
+  for (let i = 0; i < 4; i++) {
+    const a = i * 1.7 + 0.4, r = 1.78 + (i % 2) * 0.08;
+    const chunk = new THREE.Mesh(jitter(new THREE.IcosahedronGeometry(0.1 + (i % 3) * 0.04, 0), 0.04, 0.04), iceMat);
+    chunk.position.set(Math.cos(a) * r, FLOE_TOP + 0.03, Math.sin(a) * r);
+    floe.add(chunk);
+  }
+}
+
+const PG = {
+  body:    new THREE.IcosahedronGeometry(0.15, 1).scale(0.95, 1.35, 0.95),
+  belly:   new THREE.IcosahedronGeometry(0.13, 1).scale(0.7, 1.15, 0.85),
+  head:    new THREE.IcosahedronGeometry(0.11, 1),
+  face:    new THREE.IcosahedronGeometry(0.085, 1).scale(0.7, 0.9, 1),
+  beak:    new THREE.ConeGeometry(0.032, 0.09, 4).rotateZ(-Math.PI / 2),
+  flipper: new THREE.BoxGeometry(0.05, 0.19, 0.025).translate(0, -0.085, 0),
+  foot:    new THREE.BoxGeometry(0.09, 0.022, 0.06),
+  scarf:   new THREE.TorusGeometry(0.1, 0.03, 5, 10).rotateX(Math.PI / 2),
+  hit:     new THREE.SphereGeometry(0.36, 8, 6),
+};
+const pBlack  = new THREE.MeshStandardMaterial({ color: 0x1c1e30, roughness: 0.45, flatShading: true, envMapIntensity: 0.7 });
+const pWhite  = new THREE.MeshStandardMaterial({ color: 0xf6f6ff, roughness: 0.6, flatShading: true, envMapIntensity: 0.4 });
+const pOrange = new THREE.MeshStandardMaterial({ color: 0xffa33a, roughness: 0.5, flatShading: true, emissive: 0xff7a00, emissiveIntensity: 0.15 });
+
+function makePenguin(hue) {
+  const scarfMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.85, 0.6), roughness: 0.6, flatShading: true,
+    emissive: new THREE.Color().setHSL(hue, 0.9, 0.45), emissiveIntensity: 0.25 });
+  const add = (parent, geo, mat, x = 0, y = 0, z = 0) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); parent.add(m); return m; };
+  const root = new THREE.Group(), rig = new THREE.Group();
+  root.add(rig);
+  add(rig, PG.body, pBlack, 0, 0.2, 0);
+  add(rig, PG.belly, pWhite, 0.06, 0.19, 0);
+  add(rig, PG.head, pBlack, 0.01, 0.43, 0);
+  add(rig, PG.face, pWhite, 0.055, 0.42, 0);
+  add(rig, G.eye, eyeMat, 0.1, 0.46, 0.04);
+  add(rig, G.eye, eyeMat, 0.1, 0.46, -0.04);
+  add(rig, PG.beak, pOrange, 0.13, 0.41, 0);
+  add(rig, PG.scarf, scarfMat, 0, 0.335, 0);
+  const feet = [0.06, -0.06].map((z) => add(rig, PG.foot, pOrange, 0.05, 0.011, z));
+  const flippers = [0.135, -0.135].map((z) => {
+    const g = new THREE.Group(); g.position.set(0, 0.3, z); add(g, PG.flipper, pBlack); rig.add(g); return g;
+  });
+  const hit = add(rig, PG.hit, hitMat, 0, 0.25, 0);
+  return { root, rig, feet, flippers, hit };
+}
+
+const penguins = [];
+for (let i = 0; i < 5; i++) {
+  const hue = (i / 5 + 0.08) % 1;
+  const p = makePenguin(hue);
+  Object.assign(p, {
+    hue,
+    angle: (i / 5) * Math.PI * 2 + Math.random() * 0.4,
+    radius: 1.0 + i * 0.17,
+    speed: (0.28 + Math.random() * 0.1) * MOTION,
+    gait: 8.5 + Math.random() * 2,
+    seed: Math.random() * 100,
+    hop: -1, slide: 0, slideBlend: 0, cool: 3 + Math.random() * 10, snowAcc: 0,
+  });
+  p.hit.userData.penguin = p;
+  floe.add(p.root);
+  penguins.push(p);
+}
+
 /* ------------------------------------------------------------------ *
  * Post-processing
  * ------------------------------------------------------------------ */
@@ -459,7 +555,7 @@ composer.addPass(new OutputPass());
 /* ------------------------------------------------------------------ *
  * Camera framing + resize
  * ------------------------------------------------------------------ */
-const FRAME_R = 3.35;           // radius of the scene we want in view
+const FRAME_R = 3.55;           // radius of the scene we want in view
 let zoom = 1, zoomTarget = 1;
 const parallax = new THREE.Vector2(), parallaxTarget = new THREE.Vector2();
 let baseDist = 10;
@@ -482,14 +578,24 @@ function resize() {
 addEventListener('resize', resize);
 resize();
 
+const LOOK_Y = -0.35;
+const EL_MIN = -0.45, EL_MAX = 1.3;
+let camAz = 0, camEl = 0.24;
+const camVel = new THREE.Vector2();
 function updateCamera(dt) {
   zoom += (zoomTarget - zoom) * (1 - Math.exp(-dt * 6));
   parallax.lerp(parallaxTarget, 1 - Math.exp(-dt * 3));
+  if (dragMode !== 'camera') {          // coast after a camera drag
+    camAz += camVel.x * dt;
+    camEl += camVel.y * dt;
+    camVel.multiplyScalar(Math.exp(-dt * 3.5));
+  }
+  camEl = THREE.MathUtils.clamp(camEl, EL_MIN, EL_MAX);
   const d = baseDist * zoom;
-  const elev = 0.22 + parallax.y * 0.12;
-  const az = parallax.x * 0.18;
-  camera.position.set(Math.sin(az) * Math.cos(elev) * d, Math.sin(elev) * d, Math.cos(az) * Math.cos(elev) * d);
-  camera.lookAt(0, -0.05, 0);
+  const elev = THREE.MathUtils.clamp(camEl + parallax.y * 0.1, EL_MIN, EL_MAX);
+  const az = camAz + parallax.x * 0.15;
+  camera.position.set(Math.sin(az) * Math.cos(elev) * d, Math.sin(elev) * d + LOOK_Y, Math.cos(az) * Math.cos(elev) * d);
+  camera.lookAt(0, LOOK_Y, 0);
 }
 
 /* ------------------------------------------------------------------ *
@@ -500,11 +606,11 @@ const canvas = renderer.domElement;
 const pointers = new Map();
 const angVel = new THREE.Vector3(0, 0.18, 0);
 const IDLE_VEL = new THREE.Vector3(0.03, 0.17 * MOTION, 0.0);
-let dragging = false, lastInteract = -10, pinchDist = 0;
+let dragging = false, dragMode = null, lastInteract = -10, pinchDist = 0;
 let tapStart = null;
 const raycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
-const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3(), camRight = new THREE.Vector3();
+const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3(), tmpV2 = new THREE.Vector2(), camRight = new THREE.Vector3();
 let surge = 0;
 const hint = document.getElementById('hint');
 let hintShown = true;
@@ -516,13 +622,17 @@ canvas.addEventListener('pointerdown', (e) => {
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now() });
   if (pointers.size === 1) {
     dragging = true;
+    // Drag on the orb spins it; drag anywhere else (or right-drag) orbits the camera
+    const onOrb = e.button !== 2 && pick(e.clientX, e.clientY)?.object === glass;
+    dragMode = onOrb ? 'orb' : 'camera';
+    if (!onOrb) camVel.set(0, 0);
     tapStart = { x: e.clientX, y: e.clientY, t: performance.now() };
   } else if (pointers.size === 2) {
     tapStart = null;
     const [a, b] = [...pointers.values()];
     pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
   }
-  lastInteract = clock.elapsedTime;
+  if (dragMode === 'orb') lastInteract = clock.elapsedTime;
 });
 
 canvas.addEventListener('pointermove', (e) => {
@@ -547,6 +657,16 @@ canvas.addEventListener('pointermove', (e) => {
   if (tapStart && Math.hypot(e.clientX - tapStart.x, e.clientY - tapStart.y) > 8) tapStart = null;
   if (!dragging) return;
 
+  if (dragMode === 'camera') {
+    const kc = 3.4 / Math.min(innerWidth, innerHeight);
+    camAz -= dx * kc;
+    camEl += dy * kc;
+    camVel.lerp(tmpV2.set(-dx * kc / pdt, dy * kc / pdt), 0.5);
+    if (camVel.length() > 6) camVel.setLength(6);
+    if (Math.hypot(dx, dy) > 2) hideHint();
+    return;
+  }
+
   // Rotate around the camera's up and right axes so the drag feels direct
   const k = 4.2 / Math.min(innerWidth, innerHeight);
   camRight.setFromMatrixColumn(camera.matrixWorld, 0);
@@ -564,34 +684,40 @@ canvas.addEventListener('pointermove', (e) => {
 function endPointer(e) {
   if (!pointers.has(e.pointerId)) return;
   pointers.delete(e.pointerId);
+  if (dragMode === 'orb') lastInteract = clock.elapsedTime;
   if (pointers.size < 2) pinchDist = 0;
   if (pointers.size === 0) {
     dragging = false;
     if (tapStart && performance.now() - tapStart.t < 350 && e.type === 'pointerup') handleTap(e.clientX, e.clientY);
     tapStart = null;
+    dragMode = null;
   } else if (pointers.size === 1) {
     const [p] = pointers.values(); p.t = performance.now();
   }
-  lastInteract = clock.elapsedTime;
 }
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') parallaxTarget.set(0, 0); });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   zoomTarget = THREE.MathUtils.clamp(zoomTarget * Math.exp(e.deltaY * 0.0012), 0.6, 1.7);
 }, { passive: false });
 
-const hitTargets = [glass, ...unicorns.map((u) => u.hit)];
-function handleTap(x, y) {
-  hideHint();
+const hitTargets = [glass, ...unicorns.map((u) => u.hit), ...penguins.map((p) => p.hit)];
+function pick(x, y) {
   ndc.set((x / innerWidth) * 2 - 1, -(y / innerHeight) * 2 + 1);
   raycaster.setFromCamera(ndc, camera);
-  const hit = raycaster.intersectObjects(hitTargets, false)[0];
+  return raycaster.intersectObjects(hitTargets, false)[0];
+}
+function handleTap(x, y) {
+  hideHint();
+  const hit = pick(x, y);
   if (!hit) return;
-  const u = hit.object.userData.unicorn;
-  if (u) leap(u, !reducedMotion);
-  else orbSurge();
+  const { unicorn, penguin } = hit.object.userData;
+  if (unicorn) leap(unicorn, !reducedMotion);
+  else if (penguin) penguinHop(penguin);
+  else if (hit.object === glass) orbSurge();
 }
 
 const tmpC = new THREE.Color(), tmpP = new THREE.Vector3(), tmpVel = new THREE.Vector3();
@@ -619,6 +745,14 @@ function orbSurge() {
   angVel.add(tmpV);
   lastInteract = clock.elapsedTime;
   unicorns.forEach((u, i) => setTimeout(() => leap(u, false), 60 + i * 70));
+  penguins.forEach((p, i) => setTimeout(() => penguinHop(p), 150 + i * 90));
+}
+
+function penguinHop(p) {
+  if (p.hop >= 0) return;
+  p.hop = 0; p.slide = 0;
+  p.rig.getWorldPosition(tmpP);
+  burst(tmpP, isMobile ? 30 : 50, 1.2, 0.12, 1.0, 0.06, p.hue);
 }
 
 /* ------------------------------------------------------------------ *
@@ -710,6 +844,56 @@ function updateUnicorns(t, dt) {
   }
 }
 
+function updatePenguins(t, dt) {
+  floe.position.y = FLOE_Y + Math.sin(t * 0.7) * 0.05;
+  floe.rotation.z = Math.sin(t * 0.5) * 0.025;
+  floe.rotation.x = Math.sin(t * 0.43 + 1) * 0.025;
+  for (const p of penguins) {
+    // Every so often, flop onto the belly and toboggan
+    if (p.slide > 0) p.slide -= dt;
+    else if ((p.cool -= dt) <= 0 && p.hop < 0) { p.slide = 1.8; p.cool = 6 + Math.random() * 10; }
+    p.slideBlend += ((p.slide > 0 ? 1 : 0) - p.slideBlend) * (1 - Math.exp(-dt * 6));
+    const sb = p.slideBlend, w = 1 - sb;
+
+    p.angle -= p.speed * (1 + sb * 2.2 + surge * 1.5) * dt;   // clockwise, opposite the unicorns
+    const a = p.angle;
+    p.root.position.set(Math.cos(a) * p.radius, FLOE_TOP, Math.sin(a) * p.radius);
+    p.root.rotation.y = Math.atan2(Math.cos(a), Math.sin(a));
+
+    const ph = t * p.gait * MOTION + p.seed;
+    p.rig.rotation.set(Math.sin(ph) * 0.2 * w, 0, -1.35 * sb);
+    p.rig.position.y = Math.abs(Math.sin(ph)) * 0.025 * w + sb * 0.11;
+    p.feet[0].position.y = 0.011 + Math.max(0, Math.sin(ph)) * 0.04 * w;
+    p.feet[1].position.y = 0.011 + Math.max(0, -Math.sin(ph)) * 0.04 * w;
+
+    let flap = 0.3 + Math.abs(Math.sin(ph)) * 0.2 * w;
+    if (p.hop >= 0) {
+      p.hop += dt / 0.85;
+      const q = Math.min(p.hop, 1), arc = Math.sin(Math.PI * q);
+      p.rig.position.y += arc * 0.45;
+      p.rig.rotation.y = THREE.MathUtils.smootherstep(q, 0, 1) * TAU;
+      flap += (0.6 + Math.sin(q * Math.PI * 10) * 0.5) * arc;
+      if (p.hop >= 1) p.hop = -1;
+    }
+    p.flippers[0].rotation.set(-flap, 0, -sb * 1.1);
+    p.flippers[1].rotation.set(flap, 0, -sb * 1.1);
+
+    // Spray of snow sparkles while sliding
+    if (sb > 0.5) {
+      p.snowAcc += dt * 14;
+      if (p.snowAcc >= 1) {
+        p.root.getWorldPosition(tmpP);
+        while (p.snowAcc >= 1) {
+          p.snowAcc -= 1;
+          tmpVel.set((Math.random() - 0.5) * 0.4, 0.2 + Math.random() * 0.3, (Math.random() - 0.5) * 0.4);
+          tmpC.setHSL(0.55 + Math.random() * 0.08, 0.6, 0.8);
+          sparks.spawn(tmpP, tmpVel, tmpC, 0.7 + Math.random() * 0.4, 0.04 + Math.random() * 0.03);
+        }
+      }
+    }
+  }
+}
+
 /* Adaptive resolution: if the device can't keep up, step the pixel ratio down */
 let perfT = 0, perfFrames = 0, perfChecks = 0;
 function adaptQuality(dt) {
@@ -730,6 +914,7 @@ renderer.setAnimationLoop(() => {
   updateCamera(dt);
   updateOrb(t, dt);
   updateUnicorns(t, dt);
+  updatePenguins(t, dt);
   sparks.update(dt);
   stars.material.uniforms.uTime.value = t;
   stars.rotation.y = t * 0.004;

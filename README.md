@@ -1,13 +1,15 @@
 # Prism Orb
 
-A single-page interactive Three.js scene: a faceted, glassy rainbow-prism orb that breathes with a soft bloom, circled by a herd of low-poly unicorns leaving sparkle trails.
+A single-page interactive Three.js scene: a faceted, glassy rainbow-prism orb that breathes with a soft bloom, circled by a herd of low-poly unicorns leaving sparkle trails, above an ice floe of waddling penguins.
 
 Open `index.html` in a modern browser (WebGL 2). Three.js r170 loads from jsDelivr, so there's no build step. To run it locally, serve the folder, for example with `npx serve .`.
 
 ## Interaction
-- **Drag**: spin the orb. It keeps its momentum, then settles back into a slow idle rotation.
-- **Tap / click the orb**: a light surge sends a burst of sparks out and makes every unicorn hop.
+- **Drag anywhere**: orbit the camera around the scene (right-drag also orbits on desktop).
+- **Drag the orb itself**: spin it. It keeps its momentum, then settles back into a slow idle rotation.
+- **Tap / click the orb**: a light surge sends a burst of sparks out and makes every unicorn and penguin hop.
 - **Tap a unicorn**: it leaps and does a flip.
+- **Tap a penguin**: it hops, spins and flaps. Penguins also belly-slide every so often.
 - **Pinch / scroll wheel**: zoom. **Mouse move** (desktop): gentle parallax.
 
 ## Mobile vs desktop
